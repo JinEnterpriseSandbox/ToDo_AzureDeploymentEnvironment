@@ -27,7 +27,7 @@ var regionReference = {
   westus2: 'wus2'
 }
 
-var language = 'Bicep'
+// var language = 'Bicep'
 
 //targetScope = 'subscription'
 var nameSuffix = empty(adeName) ?  toLower('${baseName}-${environmentName}-${regionReference[location]}') : '${devCenterProjectName}-${adeName}'
@@ -41,83 +41,72 @@ resource cosmosDB 'Microsoft.DocumentDB/databaseAccounts@2023-04-15' existing ={
   name: cosmosDBName
   scope: resourceGroup(cosmosDBResourceGroup)
 }
-module userAssignedIdentity 'br:acrbicepregistrydeveus.azurecr.io/bicep/modules/userassignedidentity:v1' ={
-  name: 'userAssignedIdentityModule'
-  params:{
+module userAssignedIdentity 'br/public:avm/res/managed-identity/user-assigned-identity:0.4.0' = {
+  name: 'userAssignedIdentityDeployment'
+  params: {
+    name: nameSuffix
     location: location
-    userIdentityName: nameSuffix
   }
 }
 
-module appServicePlan 'br:acrbicepregistrydeveus.azurecr.io/bicep/modules/appserviceplan:v1' ={
+module appServicePlan 'br/public:avm/res/web/serverfarm:0.4.1' = {
   name: 'appServicePlanModule'
   params:{
     location: location
-    appServicePlanName: nameSuffix
-    language: language
-    appServicePlanSKU: appServicePlanSKU
-    appServiceKind: 'linux'
+    name: nameSuffix
+    skuName: appServicePlanSKU
+    kind: 'app'
   }
 }
 
-module appService 'br:acrbicepregistrydeveus.azurecr.io/bicep/modules/appservice:v1' ={
+module appService 'br/public:avm/res/web/site:0.13.1' ={
   name: 'appServiceModule'
   params:{
     location: location
-    appServicePlanID: appServicePlan.outputs.appServicePlanID
-    appServiceName: nameSuffix
-    principalId: userAssignedIdentity.outputs.userIdentityResrouceId
-    appSettingsArray: [
-      {
-       name:'APPINSIGHTS_INSTRUMENTATIONKEY'
-       value: appInsights.outputs.appInsightsInstrumentationKey
+    
+    serverFarmResourceId: appServicePlan.outputs.resourceId
+    kind: 'app,container,windows'
+    name: nameSuffix
+    managedIdentities: {
+      systemAssigned: true
+      userAssignedResourceIds: [
+        userAssignedIdentity.outputs.resourceId
+      ]
     }
-    {
-      name: 'CosmosDb:Account'
-      value: 'https://${cosmosDB.name}.documents.azure.com:443/'
+    siteConfig: {
+      alwaysOn: false
     }
-    {
-      name: 'CosmosDb:DatabaseName'
-      value: 'Tasks'
+    appInsightResourceId: appInsights.outputs.applicationInsightsResourceId
+
+    appSettingsKeyValuePairs: {
+      CosmosDb__Account: 'https://${cosmosDB.name}.documents.azure.com:443/'
+      CosmosDb__DatabaseName: 'Tasks'
+      CosmosDb__ContainerName: 'Item'
+      WEBSITE_RUN_FROM_PACKAGE: '1'
+      SCM_DO_BUILD_DURING_DEPLOYMENT: 'true'
+      ApplicationInsightsAgent_EXTENSION_VERSION: '~2'
     }
-    {
-      name: 'CosmosDb:ContainerName'
-      value: 'Item'
-    }
-    {
-      name: 'WEBSITE_RUN_FROM_PACKAGE'
-      value: '1'
-    }
-    {
-      name: 'SCM_DO_BUILD_DURING_DEPLOYMENT'
-      value: 'true'
-    }
-    {
-      name: 'ApplicationInsightsAgent_EXTENSION_VERSION'
-      value: '~2'
-    }
-  ]
   }
 }
 
-
-module appInsights 'br:acrbicepregistrydeveus.azurecr.io/bicep/modules/appinsights:v1' ={
-  name: 'appInsightsModule'
-  params:{
+module appInsights 'br/public:avm/ptn/azd/insights-dashboard:0.1.0' = {
+  name: 'applicationinsights'
+  params: {
+    logAnalyticsWorkspaceResourceId: logAnalytics.id
+    name: nameSuffix
     location: location
-    appInsightsName: nameSuffix
-    logAnalyticsWorkspaceID: logAnalytics.id
-    language: language
+    dashboardName: 'Favorites'
+    enableTelemetry: true
   }
 }
 
-module cosmosRBAC 'br:acrbicepregistrydeveus.azurecr.io/bicep/modules/cosmossqldbroleassignment:v1' ={
+module cosmosRBAC './module/cosmossqldbroleassignment/main.bicep' ={
   name: 'cosmosRBACModule'
   scope: resourceGroup(cosmosDBResourceGroup)
   params: {
     databaseAccountName: cosmosDB.name
     databaseAccountResourceGroup: cosmosDBResourceGroup
-    principalId: appService.outputs.appServiceManagedIdentity
+    principalId: appService.outputs.systemAssignedMIPrincipalId
   }
 }
 
